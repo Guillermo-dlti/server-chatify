@@ -1,89 +1,112 @@
-import dotenv from 'dotenv';
+import dotenv from "dotenv";
 dotenv.config();
 
-import express from 'express';
-import { createServer } from 'node:http';
-import { Server } from 'socket.io';
-import pg from 'pg';
+import express from "express";
+import { createServer } from "node:http";
+import { Server } from "socket.io";
+import pg from "pg";
 
 const app = express();
 const server = createServer(app);
 
 const io = new Server(server, {
-    cors: {
-        origin: process.env.CLIENT_URL || 'http://localhost:5173',
-        methods: ['GET', 'POST'],
-        credentials: true
-    }
+  cors: {
+    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    methods: ["GET", "POST"],
+    credentials: true,
+  },
+  connectionStateRecovery: {},
 });
 
-// PostgreSQL connection
 const pool = new pg.Pool({
-    connectionString: process.env.DATABASE_URL,
+  connectionString: process.env.DATABASE_URL,
 });
 
+const ALLOWED_ROOMS = ["General", "Tech Talk", "Random", "Gaming"];
 
 await pool.query(`
   CREATE TABLE IF NOT EXISTS messages (
-      id SERIAL PRIMARY KEY,
-      client_offset TEXT UNIQUE,
-      content TEXT
+    id SERIAL PRIMARY KEY,
+    content TEXT NOT NULL,
+    username VARCHAR(100) NOT NULL,
+    room VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   );
 `);
 
-app.get('/', (req, res) => {
-    res.send('<h1>Hello world 2</h1>');
+app.get("/", (req, res) => {
+  res.send("<h1>Hello world 2</h1>");
 });
 
-io.on('connection', async (socket) => {
-    console.log('a user connected', socket.id);
+io.on("connection", (socket) => {
+  console.log("a user connected", socket.id);
 
-    if (!socket.recovered) {
-        try {
-            const result = await pool.query(
-                'SELECT id, content FROM messages WHERE id > $1 ORDER BY id',
-                [socket.handshake.auth.serverOffset || 0]
-            );
+  socket.on("join room", async ({ username, room }) => {
+    try {
+      if (!ALLOWED_ROOMS.includes(room)) {
+        socket.emit("error message", "Room no válido");
+        return;
+      }
 
-            for (const row of result.rows) {
-                socket.emit('chat message', row.content, row.id);
-            }
-        } catch (e) {
-            console.error('Error fetching messages:', e);
-        }
+      socket.join(room);
+
+      const result = await pool.query(
+        `SELECT id, content, username, room, created_at
+         FROM messages
+         WHERE room = $1
+         ORDER BY created_at ASC`,
+        [room]
+      );
+
+      socket.emit("room history", result.rows);
+
+      socket.to(room).emit("user joined", {
+        username,
+        room,
+      });
+    } catch (e) {
+      console.error("Error joining room:", e);
+      socket.emit("error message", "Error al cargar el room");
     }
+  });
 
-    socket.on('chat message', async (msg) => {
-        console.log('message: ' + msg);
-        let result;
-        try {
-            result = await pool.query(
-                'INSERT INTO messages (content) VALUES ($1) RETURNING id',
-                [msg]
-            );
-            // include the offset with the message
-            io.emit('chat message', msg, result.rows[0].id);
-        } catch (e) {
-            console.error('Error inserting message:', e);
-            return;
-        }
-    });
+  socket.on("leave room", ({ room }) => {
+    socket.leave(room);
+  });
 
-    socket.on('disconnect', () => {
-        console.log('user disconnected', socket.id);
-    });
-    connectionStateRecovery: {
+  socket.on("chat message", async ({ content, username, room }) => {
+    try {
+      if (!content || !username || !room) {
+        socket.emit("error message", "Datos incompletos");
+        return;
+      }
 
+      if (!ALLOWED_ROOMS.includes(room)) {
+        socket.emit("error message", "Room no válido");
+        return;
+      }
+
+      const result = await pool.query(
+        `INSERT INTO messages (content, username, room)
+         VALUES ($1, $2, $3)
+         RETURNING id, content, username, room, created_at`,
+        [content, username, room]
+      );
+
+      io.to(room).emit("chat message", result.rows[0]);
+    } catch (e) {
+      console.error("Error inserting message:", e);
+      socket.emit("error message", "Error al enviar mensaje");
     }
+  });
+
+  socket.on("disconnect", () => {
+    console.log("user disconnected", socket.id);
+  });
 });
 
-
-// prep for deployment
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => {
-    console.log(`server running on port ${PORT}`);
-});
 
-// server.listen(3000, () => {
-//     console.log('server running at http://localhost:3000');
-// });
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`server running on port ${PORT}`);
+});
