@@ -23,6 +23,40 @@ const pool = new pg.Pool({
 });
 
 const ALLOWED_ROOMS = ["General", "Tech Talk", "Random", "Gaming"];
+const roomUserCounts = new Map();
+
+const getRoomUsers = (room) => {
+  const usersMap = roomUserCounts.get(room);
+  if (!usersMap) return [];
+  return Array.from(usersMap.keys()).sort((a, b) => a.localeCompare(b));
+};
+
+const emitRoomUsers = (room) => {
+  io.to(room).emit("room users", getRoomUsers(room));
+};
+
+const addUserToRoom = (room, username) => {
+  const usersMap = roomUserCounts.get(room) ?? new Map();
+  const currentCount = usersMap.get(username) ?? 0;
+  usersMap.set(username, currentCount + 1);
+  roomUserCounts.set(room, usersMap);
+};
+
+const removeUserFromRoom = (room, username) => {
+  const usersMap = roomUserCounts.get(room);
+  if (!usersMap) return;
+
+  const currentCount = usersMap.get(username) ?? 0;
+  if (currentCount <= 1) {
+    usersMap.delete(username);
+  } else {
+    usersMap.set(username, currentCount - 1);
+  }
+
+  if (usersMap.size === 0) {
+    roomUserCounts.delete(room);
+  }
+};
 
 await pool.query(`
   CREATE TABLE IF NOT EXISTS messages (
@@ -67,6 +101,14 @@ io.on("connection", (socket) => {
       }
 
       const cleanUsername = username.trim();
+      const previousRoom = socket.data.room;
+      const previousUsername = socket.data.username;
+
+      if (previousRoom && previousUsername) {
+        socket.leave(previousRoom);
+        removeUserFromRoom(previousRoom, previousUsername);
+        emitRoomUsers(previousRoom);
+      }
 
       await pool.query(
         `INSERT INTO users (username)
@@ -76,6 +118,10 @@ io.on("connection", (socket) => {
       );
 
       socket.join(room);
+      socket.data.room = room;
+      socket.data.username = cleanUsername;
+      addUserToRoom(room, cleanUsername);
+      emitRoomUsers(room);
 
       const result = await pool.query(
         `SELECT id, content, username, room, created_at
@@ -99,6 +145,13 @@ io.on("connection", (socket) => {
 
   socket.on("leave room", ({ room }) => {
     socket.leave(room);
+
+    if (socket.data.room === room && socket.data.username) {
+      removeUserFromRoom(room, socket.data.username);
+      emitRoomUsers(room);
+      socket.data.room = null;
+      socket.data.username = null;
+    }
   });
 
   socket.on("chat message", async ({ content, username, room }) => {
@@ -131,6 +184,10 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
+    if (socket.data.room && socket.data.username) {
+      removeUserFromRoom(socket.data.room, socket.data.username);
+      emitRoomUsers(socket.data.room);
+    }
     console.log("user disconnected", socket.id);
   });
 });
