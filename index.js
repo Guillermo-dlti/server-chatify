@@ -170,8 +170,8 @@ io.on("connection", (socket) => {
       const cleanUsername = username.trim();
 
       const result = await pool.query(
-        `INSERT INTO messages (content, username, room)
-         VALUES ($1, $2, $3)
+        `INSERT INTO messages (content, username, room, created_at)
+         VALUES ($1, $2, $3, NOW())
          RETURNING id, content, username, room, created_at`,
         [cleanContent, cleanUsername, room]
       );
