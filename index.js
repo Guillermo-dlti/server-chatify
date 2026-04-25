@@ -190,6 +190,17 @@ io.on("connection", (socket) => {
     }
     console.log("user disconnected", socket.id);
   });
+
+  socket.on("typing", ({ username, room }) => {
+    if (!username || !room) return;
+
+    if (!ALLOWED_ROOMS.includes(room)) return;
+
+    socket.to(room).emit("typing", {
+      username,
+      room,
+    });
+  });
 });
 
 const PORT = process.env.PORT || 3000;
