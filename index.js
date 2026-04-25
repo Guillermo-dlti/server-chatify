@@ -34,6 +34,19 @@ await pool.query(`
   );
 `);
 
+await pool.query(`
+  CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(100) NOT NULL UNIQUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+await pool.query(`
+  ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+`);
+
 app.get("/", (req, res) => {
   res.send("<h1>Hello world 2</h1>");
 });
@@ -48,6 +61,20 @@ io.on("connection", (socket) => {
         return;
       }
 
+      if (!username || !username.trim()) {
+        socket.emit("error message", "Username requerido");
+        return;
+      }
+
+      const cleanUsername = username.trim();
+
+      await pool.query(
+        `INSERT INTO users (username)
+         VALUES ($1)
+         ON CONFLICT (username) DO NOTHING`,
+        [cleanUsername]
+      );
+
       socket.join(room);
 
       const result = await pool.query(
@@ -61,7 +88,7 @@ io.on("connection", (socket) => {
       socket.emit("room history", result.rows);
 
       socket.to(room).emit("user joined", {
-        username,
+        username: cleanUsername,
         room,
       });
     } catch (e) {
@@ -76,7 +103,7 @@ io.on("connection", (socket) => {
 
   socket.on("chat message", async ({ content, username, room }) => {
     try {
-      if (!content || !username || !room) {
+      if (!content || !content.trim() || !username || !username.trim() || !room) {
         socket.emit("error message", "Datos incompletos");
         return;
       }
@@ -86,11 +113,14 @@ io.on("connection", (socket) => {
         return;
       }
 
+      const cleanContent = content.trim();
+      const cleanUsername = username.trim();
+
       const result = await pool.query(
         `INSERT INTO messages (content, username, room)
          VALUES ($1, $2, $3)
          RETURNING id, content, username, room, created_at`,
-        [content, username, room]
+        [cleanContent, cleanUsername, room]
       );
 
       io.to(room).emit("chat message", result.rows[0]);
